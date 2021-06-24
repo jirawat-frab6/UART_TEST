@@ -74,10 +74,12 @@ typedef enum{
 	state_n_station,
 	state_data_frame,
 	state_check_sum,
-	state_wait_for_ack
+	state_wait_for_ack1_1,
+	state_wait_for_ack1_2
 }uart_state;
 
 int inputchar = -1;
+
 
 
 /* USER CODE END PV */
@@ -394,6 +396,9 @@ void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len)
 
 }
 
+uint8_t mcu_connect = 0,goals[512] = {0},go_now = 0,current_station = 0,enable_gripper = 0,enable_sethome = 0;
+uint16_t n_goal = 0;
+double max_velocity = 0,set_position = 0,current_position = 1.5634;
 static uart_state state = state_idle;
 static uint8_t sum = 0;
 static uint8_t datas[256] = {0},data_ind = 0,n_data = 0;
@@ -404,20 +409,9 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 	switch (state) {
 		case state_idle:
 			sum = data_ind = 0;
-
-			if(input == 0b1001){
-				state = state_mode;
-				sum += 0b1001;
-			}
-			else{
-				state = state_idle;
-				sum = n_data = data_ind = mode = 0;
-			}
-			break;
-		case state_mode:
-			if(input >= 0b0001 && input <= 0b1110){
-				mode = input;
-				sum += mode;
+			if(input >= 0b10010001 && input <= 0b10011110){
+				mode = input & 0b1111;
+				sum += input;
 				switch (mode){
 					case 1:n_data = 2;state = state_data_frame;break;
 					case 2:state = state_check_sum;break;
@@ -436,13 +430,12 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 				}
 			}
 			else{
-				state = state_idle;
 				sum = n_data = data_ind = mode = 0;
 			}
 			break;
 		case state_n_station:
-			n_data = input & 0xFF;
-			sum+= n_data;
+			n_data = (input+1)/2 & 0xFF;
+			sum+= input;
 			state = state_data_frame;
 			break;
 		case state_data_frame:
@@ -458,45 +451,123 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 			if(input == (uint8_t) ~sum){
 				switch(mode){
 					case 1:{
-						uint8_t temp[] = {0b1001 , mode , datas[0] , datas[1] , (uint8_t)input};
-						UARTTxWrite(&UART2, temp, 5);
+						uint8_t temp[] = { (0b1001<<4) & mode , datas[0] , datas[1] , (uint8_t)input};
+						UARTTxWrite(&UART2, temp, 4);
 						state = state_idle;
 						break;
 					}
-					case 2:
+					case 2:{
+						mcu_connect = 1;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 3:
+					}
+					case 3:{
+						mcu_connect = 0;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 4:
+					}
+					case 4:{
+						max_velocity = datas[0];
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 5:
+					}
+					case 5:{
+						set_position = (double)((uint16_t)(datas[0]<<8) + datas[1])/1e-4;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 6:
+					}
+					case 6:{
+						goals[0] = datas[0];
+						n_goal = 1;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 7:
+					}
+					case 7:{
+						n_goal = 0;
+						for(int i = 0;i < n_data;i++){
+							goals[2*i] = datas[i] & 0b1111;
+							goals[2*i+1] = datas[i]>>4;
+							n_goal += 2;
+						}
+						if(goals[n_goal-1] == 0){
+							n_goal--;
+						}
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 8:
+					}
+					case 8:{
+						go_now = 1;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 9:
+					}
+					case 9:{
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						uint8_t temp2[] = {0b10011001,current_station,~(0b10011001+current_station) & 0xFF};
+						UARTTxWrite(&UART2, temp2, 3);
+						state = state_wait_for_ack1_1;
 						break;
-					case 10:
+					}
+					case 10:{
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						uint16_t pos = (uint16_t)(current_position*1e4);
+						uint8_t temp2[] = {0b10011010,pos >> 8,pos & 0xFF, ~(0b10011001+(pos >> 8)+ (pos & 0xFF)) & 0xFF};
+						UARTTxWrite(&UART2, temp2, 4);
+						state = state_wait_for_ack1_1;
 						break;
-					case 11:
+					}
+					case 11:{
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						uint8_t temp2[] = {0b10011011,(uint8_t)max_velocity,~(0b10011001+(uint8_t)max_velocity) & 0xFF};
+						UARTTxWrite(&UART2, temp2, 3);
+						state = state_wait_for_ack1_1;
 						break;
-					case 12:
+					}
+					case 12:{
+						enable_gripper = 1;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 13:
+					}
+					case 13:{
+						enable_gripper = 0;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
-					case 14:
+					}
+					case 14:{
+						enable_sethome = 1;
+						uint8_t temp[] = {0x58,0b01110101};
+						UARTTxWrite(&UART2, temp, 2);
+						state = state_idle;
 						break;
+					}
 				}
 			}
 			else{
-				//error
+				//error check sum
 			}
 			break;
-		default:
-			break;
+		case state_wait_for_ack1_1:{if(input == 0x58){state = state_wait_for_ack1_2;}break;}
+		case state_wait_for_ack1_2:{if(input == 0b01110101){state = state_idle;}break;}
 	}
 
 }
