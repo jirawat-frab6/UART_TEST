@@ -22,6 +22,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stdio.h"
+#include <stdlib.h>
+#include "string.h"
 
 /* USER CODE END Includes */
 
@@ -32,6 +35,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define MAX_PACKET_LEN 255
+
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -41,16 +48,55 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
+typedef struct _UartStructure
+{
+	UART_HandleTypeDef *huart;
+	uint16_t TxLen, RxLen;
+	uint8_t *TxBuffer;
+	uint16_t TxTail, TxHead;
+	uint8_t *RxBuffer;
+	uint16_t RxTail; //RXHeadUseDMA
+
+} UARTStucrture;
+
+UARTStucrture UART2 =
+{ 0 };
+
+typedef enum{
+	state_idle,
+	state_start,
+	state_mode,
+	state_n_station,
+	state_data_frame,
+	state_check_sum,
+	state_wait_for_ack
+}uart_state;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
+
+void UARTInit(UARTStucrture *uart);
+
+void UARTResetStart(UARTStucrture *uart);
+
+uint32_t UARTGetRxHead(UARTStucrture *uart);
+
+int16_t UARTReadChar(UARTStucrture *uart);
+
+void UARTTxDumpBuffer(UARTStucrture *uart);
+
+void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len);
+
 
 /* USER CODE END PFP */
 
@@ -87,8 +133,16 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  UART2.huart = &huart2;
+  UART2.RxLen = 255;
+  UART2.TxLen = 255;
+  UARTInit(&UART2);
+  UARTResetStart(&UART2);
+
 
   /* USER CODE END 2 */
 
@@ -96,9 +150,19 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  int16_t inputChar = UARTReadChar(&UART2);
+	  if(inputChar != -1){
+		  char temp[32];
+		  sprintf(temp, "Recived [%d]\r\n", inputChar);
+		  UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));
+	  }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	  UARTTxDumpBuffer(&UART2);
+
   }
   /* USER CODE END 3 */
 }
@@ -181,6 +245,25 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -214,6 +297,196 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void UARTInit(UARTStucrture *uart)
+{
+	//dynamic memory allocate
+	uart->RxBuffer = (uint8_t*) calloc(sizeof(uint8_t), UART2.RxLen);
+	uart->TxBuffer = (uint8_t*) calloc(sizeof(uint8_t), UART2.TxLen);
+	uart->RxTail = 0;
+	uart->TxTail = 0;
+	uart->TxHead = 0;
+
+}
+
+void UARTResetStart(UARTStucrture *uart)
+{
+	HAL_UART_Receive_DMA(uart->huart, uart->RxBuffer, uart->RxLen);
+}
+uint32_t UARTGetRxHead(UARTStucrture *uart)
+{
+	return uart->RxLen - __HAL_DMA_GET_COUNTER(uart->huart->hdmarx);
+}
+int16_t UARTReadChar(UARTStucrture *uart)
+{
+	int16_t Result = -1; // -1 Mean no new data
+
+	//check Buffer Position
+	if (uart->RxTail != UARTGetRxHead(uart))
+	{
+		//get data from buffer
+		Result = uart->RxBuffer[uart->RxTail];
+		uart->RxTail = (uart->RxTail + 1) % uart->RxLen;
+
+	}
+	return Result;
+
+}
+void UARTTxDumpBuffer(UARTStucrture *uart)
+{
+	static uint8_t MultiProcessBlocker = 0;
+
+	if (uart->huart->gState == HAL_UART_STATE_READY && !MultiProcessBlocker)
+	{
+		MultiProcessBlocker = 1;
+
+		if (uart->TxHead != uart->TxTail)
+		{
+			//find len of data in buffer (Circular buffer but do in one way)
+			uint16_t sentingLen =
+					uart->TxHead > uart->TxTail ?
+							uart->TxHead - uart->TxTail :
+							uart->TxLen - uart->TxTail;
+
+			//sent data via DMA
+			HAL_UART_Transmit_DMA(uart->huart, &(uart->TxBuffer[uart->TxTail]),
+					sentingLen);
+			//move tail to new position
+			uart->TxTail = (uart->TxTail + sentingLen) % uart->TxLen;
+
+		}
+		MultiProcessBlocker = 0;
+	}
+}
+void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len)
+{
+	//check data len is more than buffur?
+	uint16_t lenAddBuffer = (len <= uart->TxLen) ? len : uart->TxLen;
+	// find number of data before end of ring buffer
+	uint16_t numberOfdataCanCopy =
+			lenAddBuffer <= uart->TxLen - uart->TxHead ?
+					lenAddBuffer : uart->TxLen - uart->TxHead;
+	//copy data to the buffer
+	memcpy(&(uart->TxBuffer[uart->TxHead]), pData, numberOfdataCanCopy);
+
+	//Move Head to new position
+
+	uart->TxHead = (uart->TxHead + lenAddBuffer) % uart->TxLen;
+	//Check that we copy all data That We can?
+	if (lenAddBuffer != numberOfdataCanCopy)
+	{
+		memcpy(uart->TxBuffer, &(pData[numberOfdataCanCopy]),
+				lenAddBuffer - numberOfdataCanCopy);
+	}
+	UARTTxDumpBuffer(uart);
+
+}
+
+void uart_protocal(int16_t input,UARTStucrture *uart){
+
+	static uart_state state = state_idle;
+	static uint16_t sum = 0;
+	static uint8_t datas[256] = {0},data_ind = 0,n_data = 0;
+	static uint8_t mode = 0;
+
+	switch (state) {
+		case state_idle:
+
+			data_ind = 0;
+
+			if(input == 0b1001){
+				state = state_mode;
+				sum += 0b1001;
+			}
+			else{
+				state = state_idle;
+				sum = n_data = data_ind = mode = 0;
+			}
+			break;
+		case state_mode:
+			if(input >= 0b1001 && input <= 0b1110){
+				mode = input;
+				sum += mode;
+				switch (mode){
+					case 1:n_data = 2;state = state_data_frame;break;
+					case 2:state = state_check_sum;break;
+					case 3:state = state_check_sum;break;
+					case 4:n_data = 1;state = state_data_frame;break;
+					case 5:n_data = 2;state = state_data_frame;break;
+					case 6:n_data = 1;state = state_data_frame;break;
+					case 7:state = state_n_station;break;
+					case 8:state = state_check_sum;break;
+					case 9:state = state_check_sum;break;
+					case 10:state = state_check_sum;break;
+					case 11:state = state_check_sum;break;
+					case 12:state = state_check_sum;break;
+					case 13:state = state_check_sum;break;
+					case 14:state = state_check_sum;break;
+				}
+			}
+			else{
+				state = state_idle;
+				sum = n_data = data_ind = mode = 0;
+			}
+			break;
+		case state_n_station:
+			n_data = input & 0xFF;
+			sum+= n_data;
+			state = state_data_frame;
+			break;
+		case state_data_frame:
+			if(n_data--){
+				datas[data_ind] = input;
+				sum += datas[data_ind++];
+			}
+			else{
+				state = state_check_sum;
+			}
+		case state_check_sum:
+			if(input == ~sum){
+				switch(mode){
+					case 1:
+						break;
+					case 2:
+						break;
+					case 3:
+						break;
+					case 4:
+						break;
+					case 5:
+						break;
+					case 6:
+						break;
+					case 7:
+						break;
+					case 8:
+						break;
+					case 9:
+						break;
+					case 10:
+						break;
+					case 11:
+						break;
+					case 12:
+						break;
+					case 13:
+						break;
+					case 14:
+						break;
+				}
+			}
+			else{
+				//error
+			}
+			break;
+		default:
+			break;
+	}
+
+}
+
+
+
 
 /* USER CODE END 4 */
 
