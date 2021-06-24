@@ -52,6 +52,7 @@ DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
+
 typedef struct _UartStructure
 {
 	UART_HandleTypeDef *huart;
@@ -76,6 +77,9 @@ typedef enum{
 	state_wait_for_ack
 }uart_state;
 
+int inputchar = -1;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,6 +100,8 @@ int16_t UARTReadChar(UARTStucrture *uart);
 void UARTTxDumpBuffer(UARTStucrture *uart);
 
 void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len);
+
+void uart_protocal(int16_t input,UARTStucrture *uart);
 
 
 /* USER CODE END PFP */
@@ -145,6 +151,10 @@ int main(void)
 
 
   /* USER CODE END 2 */
+  {
+	  char temp[32] = {"Hello\r\n"};
+	  UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));
+  }
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -152,9 +162,11 @@ int main(void)
   {
 	  int16_t inputChar = UARTReadChar(&UART2);
 	  if(inputChar != -1){
-		  char temp[32];
-		  sprintf(temp, "Recived [%d]\r\n", inputChar);
-		  UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));
+		  /*char temp[32];
+		  sprintf(temp, "%d", inputChar);
+		  UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));*/
+		  uart_protocal(inputChar, &UART2);
+		  inputchar = -1;
 	  }
 
     /* USER CODE END WHILE */
@@ -382,17 +394,16 @@ void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len)
 
 }
 
-void uart_protocal(int16_t input,UARTStucrture *uart){
+static uart_state state = state_idle;
+static uint8_t sum = 0;
+static uint8_t datas[256] = {0},data_ind = 0,n_data = 0;
+static uint8_t mode = 0;
 
-	static uart_state state = state_idle;
-	static uint16_t sum = 0;
-	static uint8_t datas[256] = {0},data_ind = 0,n_data = 0;
-	static uint8_t mode = 0;
+void uart_protocal(int16_t input,UARTStucrture *uart){
 
 	switch (state) {
 		case state_idle:
-
-			data_ind = 0;
+			sum = data_ind = 0;
 
 			if(input == 0b1001){
 				state = state_mode;
@@ -404,7 +415,7 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 			}
 			break;
 		case state_mode:
-			if(input >= 0b1001 && input <= 0b1110){
+			if(input >= 0b0001 && input <= 0b1110){
 				mode = input;
 				sum += mode;
 				switch (mode){
@@ -435,18 +446,23 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 			state = state_data_frame;
 			break;
 		case state_data_frame:
-			if(n_data--){
+			if(data_ind < n_data){
 				datas[data_ind] = input;
 				sum += datas[data_ind++];
 			}
-			else{
+			if(data_ind == n_data){
 				state = state_check_sum;
 			}
+
 		case state_check_sum:
-			if(input == ~sum){
+			if(input == (uint8_t) ~sum){
 				switch(mode){
-					case 1:
+					case 1:{
+						uint8_t temp[] = {0b1001 , mode , datas[0] , datas[1] , (uint8_t)input};
+						UARTTxWrite(&UART2, temp, 5);
+						state = state_idle;
 						break;
+					}
 					case 2:
 						break;
 					case 3:
