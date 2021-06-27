@@ -167,8 +167,8 @@ int main(void)
 		  /*char temp[32];
 		  sprintf(temp, "%d", inputChar);
 		  UARTTxWrite(&UART2, (uint8_t*) temp, strlen(temp));*/
+
 		  uart_protocal(inputChar, &UART2);
-		  inputchar = -1;
 	  }
 
     /* USER CODE END WHILE */
@@ -399,12 +399,13 @@ void UARTTxWrite(UARTStucrture *uart, uint8_t *pData, uint16_t len)
 uint8_t mcu_connect = 0,goals[512] = {0},go_now = 0,current_station = 0,enable_gripper = 0,enable_sethome = 0;
 uint16_t n_goal = 0;
 double max_velocity = 0,set_position = 0,current_position = 1.5634;
-static uart_state state = state_idle;
-static uint8_t sum = 0;
-static uint8_t datas[256] = {0},data_ind = 0,n_data = 0;
-static uint8_t mode = 0;
 
 void uart_protocal(int16_t input,UARTStucrture *uart){
+
+	static uart_state state = state_idle;
+	static uint8_t sum = 0;
+	static uint8_t datas[256] = {0},data_ind = 0,n_data = 0;
+	static uint8_t mode = 0;
 
 	switch (state) {
 		case state_idle:
@@ -451,7 +452,7 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 			if(input == (uint8_t) ~sum){
 				switch(mode){
 					case 1:{
-						uint8_t temp[] = { (0b1001<<4) & mode , datas[0] , datas[1] , (uint8_t)input};
+						uint8_t temp[] = { (0b1001<<4) | mode , datas[0] , datas[1] , (uint8_t)input};
 						UARTTxWrite(&UART2, temp, 4);
 						state = state_idle;
 						break;
@@ -478,7 +479,7 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 						break;
 					}
 					case 5:{
-						set_position = (double)((uint16_t)(datas[0]<<8) + datas[1])/1e-4;
+						set_position = (double)((uint16_t)(datas[0]<<8) + datas[1])*1e-4;
 						uint8_t temp[] = {0x58,0b01110101};
 						UARTTxWrite(&UART2, temp, 2);
 						state = state_idle;
@@ -534,7 +535,7 @@ void uart_protocal(int16_t input,UARTStucrture *uart){
 					case 11:{
 						uint8_t temp[] = {0x58,0b01110101};
 						UARTTxWrite(&UART2, temp, 2);
-						uint8_t temp2[] = {0b10011011,(uint8_t)max_velocity,~(0b10011001+(uint8_t)max_velocity) & 0xFF};
+						uint8_t temp2[] = {0b10011011,(uint8_t)max_velocity,~(0b10011011+(uint8_t)max_velocity) & 0xFF};
 						UARTTxWrite(&UART2, temp2, 3);
 						state = state_wait_for_ack1_1;
 						break;
